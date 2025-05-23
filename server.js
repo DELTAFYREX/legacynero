@@ -536,7 +536,7 @@ class io_nearestDifferentMaster extends IO {
             this.validTargets = this.buildList(range);
             // Ditch our old target if it's invalid
             if (this.targetLock && this.validTargets.indexOf(this.targetLock) === -1) {
-                this.targetLock = undefined;
+               this.targetLock = undefined;
             }
             // Lock new target if we still don't have one.
             if (this.targetLock == null && this.validTargets.length) {
@@ -964,7 +964,7 @@ class Skill {
                 this.deduction += this.levelScore;
                 this.level += 1;
                 this.points += this.levelPoints;
-                if (this.level == c.TIER_1 || this.level == c.TIER_2 || this.level == c.TIER_3) {
+                if (this.level == c.TIER_1 || this.level == c.TIER_2 || this.level == c.TIER_3 || this.level == c.TIER_4 || this.level == c.TIER_5) {
                     this.canUpgrade = true;
                 }
                 this.update();
@@ -1123,6 +1123,10 @@ class Gun {
                 false : info.PROPERTIES.SYNCS_SKILLS;
             this.negRecoil = (info.PROPERTIES.NEGATIVE_RECOIL == null) ?
                 false : info.PROPERTIES.NEGATIVE_RECOIL;
+            this.shootOnDeath =
+        info.PROPERTIES.SHOOT_ON_DEATH == null
+          ? false
+          : info.PROPERTIES.SHOOT_ON_DEATH;
         }                    
         let position = info.POSITION;
         this.length = position[0] / 10;
@@ -1333,6 +1337,20 @@ class Gun {
                 this.bulletInit(host);
                 host.team = oo.master.master.team;
                 host.master = oo.master;
+                this.shocked = false;
+                this.shock = false;
+                this.shockedBy = -1;
+                this.shockLevel = 20;
+                this.shockToApply = 0;
+                this.shockburn = false;
+                this.shockTimer = 0;
+                this.bruned = false;
+                this.burn = false;
+                this.burnedBy = -1;
+                this.burnLevel = 80;
+                this.burnToApply = 0;
+                this.showburn = false;
+                this.burnTimer = 0;
                 host.color = oo.color;
                 host.facing = save.facing;
                 host.SIZE = save.size;
@@ -1449,12 +1467,18 @@ var bringToLife = (() => {
         if (my.settings.attentionCraver && !faucet.main && my.range) {
             my.range -= 1;
         }
-        // Invisibility
-        if (my.invisible[1]) {
-          my.alpha = Math.max(0, my.alpha - my.invisible[1])
-          if (!my.velocity.isShorterThan(0.1) || my.damageReceived)
-            my.alpha = Math.min(1, my.alpha + my.invisible[0])
-        }
+    // Invisibility
+    if (my.invisible[1]) {
+      my.alpha = Math.max(0.01, my.alpha - my.invisible[1]);
+      if (
+        !(
+          my.velocity.x * my.velocity.x + my.velocity.y * my.velocity.y <
+          0.15 * 0.15
+        ) ||
+        my.damageRecieved
+      )
+        my.alpha = Math.min(1, my.alpha + my.invisible[0]);
+    } else my.alpha = 1;
         // So we start with my master's thoughts and then we filter them down through our control stack
         my.controllers.forEach(AI => {
             let a = AI.think(b);
@@ -1498,7 +1522,7 @@ class HealthType {
     }
 
     display() {
-        return this.amount / this.max;
+    return this.max > 0 ? this.amount / this.max : -1;
     }
 
     getDamage(amount, capped = true) {
@@ -1558,10 +1582,26 @@ class Entity {
         this.isGhost = false;
         this.killCount = { solo: 0, assists: 0, bosses: 0, killers: [], };
         this.creationTime = (new Date()).getTime();
+          this.shootOnDeath = false;
         // Inheritance
         this.master = master;
         this.source = this;
         this.parent = this;
+        this.shocked = false;
+        this.shock = false;
+        this.shockedBy = -1;
+        this.shockLevel = 20;
+        this.shockToApply = 0;
+        this.shockburn = false;
+        this.shockTimer = 0;
+        this.bruned = false;
+        this.burn = false;
+        this.burnedBy = -1;
+        this.burnLevel = 80;
+        this.burnToApply = 0;
+        this.showburn = false;
+        this.burnTimer = 0;
+        this.passive = false;
         this.control = {
             target: new Vector(0, 0),
             goal: new Vector(0, 0),
@@ -1594,11 +1634,12 @@ class Entity {
                 },
                 check: () => { return active; }
             };
+      
         })();
         this.autoOverride = false;
         this.controllers = [];
         this.blend = {
-            color: '#FFFFFF',
+            color: '#1D0463',
             amount: 0,
         };
         // Objects
@@ -1611,6 +1652,15 @@ class Entity {
         this.settings = {};
         this.aiSettings = {};
         this.children = [];
+      	//poison and freeze definers
+    		this.ContactPoison = false;
+    		this.ContactFreeze = false;
+    		this.PoisonEffectiveness = {HP:5, HPP:0, SH:5, SHP:0, Time:3, AddTime:0, ExpDam:0, Interval: 1000};
+    		this.FreezeEffectiveness = {SlowMulti:0.5, Time:3, AddTime:0};
+    		this.PoisonImmunity = 1;
+    		this.FreezeImmunity = 1;
+    		this.Poisoned = {IsPoisoned:false};
+    		this.Frozen = {IsFrozen:false, SlowMulti: 1};
         // Define it
         this.SIZE = 1;
         this.define(Class.genericEntity);
@@ -1813,9 +1863,66 @@ class Entity {
         if (set.ALPHA != null) { 
             this.alpha = set.ALPHA;
         }
-        if (set.INVISIBLE != null) { 
-            this.invisible = set.INVISIBLE;
-        }
+          if (set.POWER != null) {
+      this.power = set.POWER;
+    }
+    if (set.POWERED != null) {
+      this.powered = set.POWERED;
+    }
+    if (set.POWER_TO_APPLY != null) {
+      this.powerToApply = set.POWER_TO_APPLY;
+    }
+    if (set.SHOWPOWER != null) {
+      this.showpower = set.SHOWPOWER;
+    }
+    if (set.BURN != null) {
+      this.burn = set.BURN;
+    }
+    if (set.BURNED != null) {
+      this.burned = set.BURNED;
+    }
+    if (set.BURN_TO_APPLY != null) {
+      this.burnToApply = set.BURN_TO_APPLY;
+    }
+    if (set.SHOWBURN != null) {
+      this.showburn = set.SHOWBURN;
+    }
+    if (set.SHOCK != null) {
+      this.shock = set.SHOCK;
+    }
+    if (set.SHOCKED != null) {
+      this.shocked = set.SHOCKED;
+    }
+    if (set.SHOCK_TO_APPLY != null) {
+      this.shockToApply = set.SHOCK_TO_APPLY;
+    }
+    if (set.SHOWSHOCK != null) {
+      this.showshock = set.SHOWSHOCK;
+    }
+   	if (set.POISON != null) {
+        	this.ContactPoison = set.POISON;
+    	}
+  	if (set.FREEZE != null) {
+        	this.ContactFreeze = set.FREEZE;
+    	}
+  	if (set.POISONEFFECTIVENESS != null) {
+        	this.PoisonEffectiveness = set.POISONEFFECTIVENESS;
+    	}
+  	if (set.FREEZEEFFECTIVENESS != null) {
+        	this.FreezeEffectiveness = set.FREEZEEFFECTIVENESS;
+    	}
+  	if (set.POISONIMMUNITY != null) {
+        	this.PoisonImmunity = set.POISONIMMUNITY;
+    	}
+  	if (set.FREEZEIMMUNITY != null) {
+        	this.FreezeImmunity = set.FREEZEIMMUNITY;
+    	}
+    if (set.SHOOT_ON_DEATH != null) {
+          this.shootOnDeath = set.SHOOT_ON_DEATH;
+      }
+    if (set.INVISIBLE != null)
+      this.invisible = [set.INVISIBLE[0], set.INVISIBLE[1]];
+      
         if (set.DANGER != null) { 
             this.dangerValue = set.DANGER; 
         }
@@ -1839,6 +1946,16 @@ class Entity {
         if (set.UPGRADES_TIER_3 != null) { 
             set.UPGRADES_TIER_3.forEach((e) => {
                 this.upgrades.push({ class: e, tier: 3, level: c.TIER_3, index: e.index });
+            });
+        }
+              if (set.UPGRADES_TIER_4 != null) { 
+            set.UPGRADES_TIER_4.forEach((e) => {
+                this.upgrades.push({ class: e, tier: 4, level: c.TIER_4, index: e.index });
+            });
+        }
+              if (set.UPGRADES_TIER_5 != null) { 
+            set.UPGRADES_TIER_5.forEach((e) => {
+                this.upgrades.push({ class: e, tier: 5, level: c.TIER_5, index: e.index });
             });
         }
         if (set.SIZE != null) {
@@ -2132,6 +2249,21 @@ class Entity {
                 };
             }
             break;
+        case 'explode':
+        this.SIZE += 10;
+        this.DAMAGE += 3;
+        break;
+        case 'slowexplode':
+        this.SIZE += 6;
+        this.DAMAGE += 1;
+        break;
+        case 'fastexplode':
+            this.SIZE += 10;
+            break;
+        case 'opexplode':
+            this.SIZE += 50;
+            this.DAMAGE += 50;
+            break;
         case 'swarm': 
             this.maxSpeed = this.topSpeed;
             let l = util.getDistance({ x: 0, y: 0, }, g) + 1;
@@ -2200,7 +2332,25 @@ class Entity {
         case 'autospin':
             this.facing += 0.02 / roomSpeed;
             break;
+        case 'autospinfast':
+            this.facing += 0.12 / roomSpeed;
+            break;
+        case 'explode':
+            this.SIZE += 10;
+            this.DAMAGE += 3;
+        break;
+        case 'fastexplode':
+            this.SIZE += 10;
+            this.DAMAGE += 3;
+        break;
+        case 'opexplode':
+            this.SIZE += 50;
+            this.DAMAGE += 50;
+        break;
         case 'turnWithSpeed':
+            this.facing += this.velocity.length / 90 * Math.PI / roomSpeed;
+            break;
+        case 'turnFast':
             this.facing += this.velocity.length / 90 * Math.PI / roomSpeed;
             break;
         case 'withMotion': 
@@ -2261,9 +2411,17 @@ class Entity {
         // Reset acceleration
         nullVector(this.accel); 
         // Apply motion
-        this.stepRemaining = 1;
-        this.x += this.stepRemaining * this.velocity.x / roomSpeed;
-        this.y += this.stepRemaining * this.velocity.y / roomSpeed;        
+	let slowdown = 1
+
+  	if(this.Frozen.IsFrozen != false){
+  	slowdown = this.Frozen.SlowMulti*this.FreezeImmunity;
+  	};
+       	 
+    	this.stepRemaining = 1;
+    	this.x += this.stepRemaining * this.velocity.x * slowdown / roomSpeed;
+    	this.y += this.stepRemaining * this.velocity.y * slowdown / roomSpeed;
+
+    
     }
 
     friction() {
@@ -2321,6 +2479,11 @@ class Entity {
                 this.health.amount -= this.health.getDamage(1 / roomSpeed);
             }
         }
+          if (this.shootOnDeath) {
+      if (this.range <= 1) {
+        this.define(Class.bullet); // i might update this and make it define as the class it was
+      }
+    }
         // Shield regen and damage
         if (this.shield.max) {
             if (this.damageRecieved !== 0) {
@@ -2339,6 +2502,29 @@ class Entity {
 
         // Check for death
         if (this.isDead()) {
+                //Shoot on death
+      this.guns.forEach(gun => {
+        if (gun.shootOnDeath) {
+          // get Skills
+          let sk =
+            gun.bulletStats === "master" ? gun.body.skill : gun.bulletStats;
+          // Find the end of the gun
+          if (gun.body != null) {
+            let gx =
+              gun.offset *
+                Math.cos(gun.direction + gun.angle + gun.body.facing) +
+              (1.5 * gun.length - (gun.width * gun.settings.size) / 2) *
+                Math.cos(gun.angle + gun.body.facing);
+            let gy =
+              gun.offset *
+                Math.sin(gun.direction + gun.angle + gun.body.facing) +
+              (1.5 * gun.length - (gun.width * gun.settings.size) / 2) *
+                Math.sin(gun.angle + gun.body.facing);
+            // FIRE!
+            gun.fire(gx, gy, sk);
+          }
+        }
+      });
             // Initalize message arrays
             let killers = [], killTools = [], notJustFood = false;
             // If I'm a tank, call me a nameless player
@@ -2384,7 +2570,7 @@ class Entity {
                     }
                     // Only if we give messages
                     if (dothISendAText) { 
-                        instance.sendMessage('You killed ' + name + ((killers.length > 1) ? ' (with some help).' : '.')); 
+                        instance.sendMessage('You assist-killed ' + name + ((killers.length > 1) ? ' (with some help).' : '.')); 
                     }
                 });
                 // Prepare the next part of the next 
@@ -2399,22 +2585,22 @@ class Entity {
             });
             // Prepare it and clear the collision array.
             killText = killText.slice(0, -5);
-            if (killText === 'You have been kille') killText = 'You have died a stupid death';
+            if (killText === 'You have been kille') killText = 'You have died a quite stupid death...loser';
             this.sendMessage(killText + '.');
             // If I'm the leader, broadcast it:
             if (this.id === room.topPlayerID) {
                 let usurptText = (this.name === '') ? 'The leader': this.name;
                 if (notJustFood) { 
-                    usurptText += ' has been usurped by';
+                    usurptText += ' has been annhiliated by';
                     killers.forEach(instance => {
                         usurptText += ' ';
-                        usurptText += (instance.name === '') ? 'an unnamed player' : instance.name;
+                        usurptText += (instance.name === '') ? 'a stupid noob who dont know how to use the godamn name bar' : instance.name;
                         usurptText += ' and';
                     });
                     usurptText = usurptText.slice(0, -4);
                     usurptText += '!';
                 } else {
-                    usurptText += ' fought a polygon... and the polygon won.';
+                    usurptText += ' fought a tiny little defensless shape... and the shape won and is now on the leaderboard 💀';
                 }
                 sockets.broadcast(usurptText);
             }
@@ -2433,7 +2619,15 @@ class Entity {
     kill() {
         this.health.amount = -1;
     }
-
+    bwomp() {
+      this.SIZE += 20;
+    }
+      bwomp2() {
+      this.SIZE += -20;
+    }
+      bwomp4() {
+      this.define(Class.optanks);
+      }
     destroy() {
         // Remove from the protected entities list
         if (this.isProtected) util.remove(entitiesToAvoid, entitiesToAvoid.indexOf(this)); 
@@ -2467,6 +2661,7 @@ class Entity {
         // Remove from the collision grid
         this.removeFromGrid();
         this.isGhost = true;
+        if (this.ondeath) this.ondeath();
     }    
     
     isDead() {
@@ -2888,14 +3083,20 @@ const sockets = (() => {
                 } break;
                 case 's': { // spawn request
                     if (!socket.status.deceased) { socket.kick('Trying to spawn while already alive.'); return 1; }
+                    if (m.length !== 4) {
                     if (m.length !== 2) { socket.kick('Ill-sized spawn request.'); return 1; }
+                    }
                     // Get data
                     let name = m[0].replace(c.BANNED_CHARACTERS_REGEX, '');
                     let needsRoom = m[1];
                     // Verify it
+                    if (m.length !== 4) {
                     if (typeof name != 'string') { socket.kick('Bad spawn request.'); return 1; }
+                    }
                     if (encodeURI(name).split(/%..|./).length > 48) { socket.kick('Overly-long name.'); return 1; }
+                    if (m.length !== 4) {
                     if (needsRoom !== -1 && needsRoom !== 0) { socket.kick('Bad spawn request.'); return 1; }
+                    }
                     // Bring to life
                     socket.status.deceased = false;
                     // Define the player.
@@ -2903,6 +3104,7 @@ const sockets = (() => {
                     // Free the old view
                     if (views.indexOf(socket.view) != -1) { util.remove(views, views.indexOf(socket.view)); socket.makeView(); }
                     socket.player = socket.spawn(name);     
+                    socket.player.name = name;
                     // Give it the room state
                     if (!needsRoom) { 
                         socket.talk(
@@ -2919,6 +3121,126 @@ const sockets = (() => {
                     // Log it    
                     util.log('[INFO] ' + (m[0]) + (needsRoom ? ' joined' : ' rejoined') + ' the game! Players: ' + players.length);   
                 } break;
+                    ///////////////////////COPY CODE BELOW!!!///////////////
+          case "h":
+            if (!socket.status.deceased) {
+              // Chat system!!.
+
+              let message = m[0];
+              let maxLen = 100;
+              let args = message.split(" ");
+              if (message.startsWith("/")) {
+                //help command
+                if (message.startsWith("/help")) {
+                  player.body.sendMessage("/km ~ Destroys your tank");
+                  return 1;
+                }
+                // suicide command
+                if (message.startsWith("/km")) {
+                  {
+                    player.body.destroy();
+                    return 1;
+                  }
+                
+                } 
+/*/                if (message.startsWith("/rainbow")) {
+                if (socket.key !== process.env.SECRET) {
+                  {
+                    return player.body.sendMessage(
+                    "Invalid command, Command either does not Exist or You dont have the Required Permissions to use Them. Run /help for a list of available commands."
+                  );
+                  }
+                } else
+                                    {
+                    player.body.bwomp3();
+                    return 1;
+                  
+                }
+                } /*/
+                // op tank command
+                if (message.startsWith("/op")) {
+                if (socket.key !== process.env.SECRET) {
+                  {
+                    return player.body.sendMessage(
+                    "Invalid command, Command either does not Exist or You dont have the Required Permissions to use Them. Run /help for a list of available commands."
+                  );
+                  }
+                } else
+                                    {
+                    player.body.bwomp4();
+                    return 1;
+                  
+                }
+                }
+                // grow command
+                if (message.startsWith("/grow")) {
+                if (socket.key !== process.env.SECRET) {
+                  {
+                    return player.body.sendMessage(
+                    "Invalid command, Command either does not Exist or You dont have the Required Permissions to use Them. Run /help for a list of available commands."
+                  );
+                  }
+                } else
+                                    {
+                    player.body.bwomp();
+                    return 1;
+                  
+                }
+                }
+                // shrink command
+                if (message.startsWith("/shrink")) {
+                if (socket.key !== process.env.SECRET) {
+                  {
+                    return player.body.sendMessage(
+                    "Invalid command, Command either does not Exist or You dont have the Required Permissions to use Them. Run /help for a list of available commands."
+                  );
+                  }
+                } else
+                                    {
+                    player.body.bwomp2();
+                    return 1;
+                  
+                }
+                } else
+                  return player.body.sendMessage(
+                    "Invalid command, either does not Exist or You dont have Perms to use Them. Run /help for a list of available commands."
+                  );
+              }
+              if (socket.key == process.env.SECRET) {
+                let playerName = socket.player.name
+                  ? socket.player.name
+                  : "Unnamed";
+                let chatMessage = playerName + " says: " + message;
+                sockets.broadcast(chatMessage);
+                util.log("[CHAT] " + chatMessage);
+              }
+              if (socket.key !== process.env.SECRET) {
+              if (util.time() - socket.status.lastChatTime >= 2200) {
+                // Verify it
+                if (typeof message != "string") {
+                  player.body.sendMessage("Invalid chat message.");
+                  return 1;
+                }
+
+                if (encodeURI(message).split(/%..|./).length > maxLen) {
+                  player.body.sendMessage(
+                    "Your message is too long. (<100 Characters)"
+                  );
+                  return 1;
+                }
+                let playerName = socket.player.name
+                  ? socket.player.name
+                  : "Unnamed";
+                let chatMessage = playerName + " says: " + message;
+                sockets.broadcast(chatMessage);
+                util.log("[CHAT] " + chatMessage);
+                // Basic chat spam control.
+                socket.status.lastChatTime = util.time();
+              }  else
+                if (socket.key !== process.env.SECRET) {
+                player.body.sendMessage("You're sending messages too quickly!");
+            } } }
+            break;
                 case 'S': { // clock syncing
                     if (m.length !== 1) { socket.kick('Ill-sized sync packet.'); return 1; }
                     // Get data
@@ -2953,7 +3275,9 @@ const sockets = (() => {
                     socket.update(Math.max(0, (1000 / c.networkUpdateFactor) - (util.time() - socket.camera.lastUpdate)));
                 } break;
                 case 'C': { // command packet
+                    if (m.length !== 4) {
                     if (m.length !== 3) { socket.kick('Ill-sized command packet.'); return 1; }
+                    }
                     // Get data
                     let target = {
                             x: m[0],
@@ -3381,8 +3705,8 @@ const sockets = (() => {
                     socket.camera.x = body.x; socket.camera.y = body.y; socket.camera.fov = 2000;
                     // Mark it as spawned
                     socket.status.hasSpawned = true;
-                    body.sendMessage('You have spawned! Welcome to the game.');
-                    body.sendMessage('You will be invulnerable until you move or shoot.');
+                    body.sendMessage('Welcum To me Stupid Arras.io game Clone Thingy');
+                    body.sendMessage('ur invincible untill you move or accedentally press the godamn spacebar');
                     // Move the client camera
                     socket.talk('c', socket.camera.x, socket.camera.y, socket.camera.fov);
                     return player;
@@ -3820,7 +4144,7 @@ const sockets = (() => {
                 }
                 // Delta Calculator
                 const Delta = class {
-                  constructor(dataLength, finder) {
+               constructor(dataLength, finder) {
                     this.dataLength = dataLength
                     this.finder = finder
                     this.now = finder()
@@ -4027,6 +4351,7 @@ const sockets = (() => {
                     needsFullMap: true,
                     needsNewBroadcast: true, 
                     lastHeartbeat: util.time(),
+                    lastChatTime: util.time(),
                 };  
                 // Set up loops
                 socket.loops = (() => {
@@ -4326,8 +4651,53 @@ var gameloop = (() => {
                             // Now apply it
                             my.damageRecieved += damage._n * deathFactor._n;
                             n.damageRecieved += damage._me * deathFactor._me;
-                        }
-                    }
+                          };
+
+                    
+	                 	/*  POISON & FREEZE COLLISIONS  */
+                  	if (n.ContactPoison && my.Poisoned.IsPoisoned == false) {
+                    	my.Poisoned = n.PoisonEffectiveness;
+                    	my.Poisoned.IsPoisoned = true;
+                  	};
+                  	if (my.ContactPoison && n.Poisoned.IsPoisoned == false) {
+                    	n.Poisoned = my.PoisonEffectiveness;
+                    	n.Poisoned.IsPoisoned = true;
+                  	};
+                  	if (n.ContactFreeze && my.Frozen.IsFrozen == false) {
+                    	my.Frozen = n.FreezeEffectiveness;
+                    	my.Frozen.IsFrozen = true;
+                  	};
+                  	if (my.ContactFreeze && n.Frozen.IsFrozen == false) {
+                    	n.Frozen = my.FreezeEffectiveness;
+                    	n.Frozen.IsFrozen = true;
+                  	};
+}
+          /*************   BURN  ***********/
+          if (n.burn) {
+            my.burned = true;
+            my.burnedLevel = n.burnToApply;
+            my.burnTime = 10;
+            my.burnedBy = n.master;
+          }
+          if (my.burn) {
+            n.burned = true;
+            n.burnedLevel = my.burnToApply;
+            n.burnTime = 10;
+            n.burnedBy = my.master;
+          }
+          /*************   SHOCK  ***********/
+          if (n.shock) {
+            my.shocked = true;
+            my.shockedLevel = n.shockToApply;
+            my.shockTime = 10;
+            my.shockedBy = n.master;
+          }
+          if (my.shock) {
+            n.shocked = true;
+            n.shockedLevel = my.shockToApply;
+            n.shockTime = 10;
+            n.shockedBy = my.master;
+          }
                     /************* DO MOTION ***********/    
                     if (nIsFirmCollide < 0) {
                         nIsFirmCollide *= -0.5;
@@ -4456,7 +4826,9 @@ var gameloop = (() => {
                 logs.life.set();
                 my.life();
                 logs.life.mark();
-                // Apply friction.
+               // Apply friction.
+                poison(my);
+                freeze(my);
                 my.friction();
                 my.confinementToTheseEarthlyShackles();
                 logs.selfie.set();
@@ -4464,6 +4836,8 @@ var gameloop = (() => {
                 logs.selfie.mark();
             }
         }
+  
+
         // Update collisions.
         my.collisionArray = []; 
     }
@@ -4499,6 +4873,563 @@ var gameloop = (() => {
     //setTimeout(moveloop, 1000 / roomSpeed / 30 - delta); 
 })();
 // A less important loop. Runs at an actual 5Hz regardless of game speed.
+//this is the function that actually poisons you, it needs to be separate so it call call itself and repeat a set amount of times
+function applypoison(element) {
+      if (element.Poisoned.IsPoisoned >= 1){
+    element.blend.amount = 1
+    element.Poisoned.IsPoisoned -= 1
+      let numberOfRotations = 1
+      if(element.Poisoned.ExpDam == 1){
+      numberOfRotations = element.Poisoned.Time*1000/element.Poisoned.Interval
+      }
+      if (!element.invuln && element.health.amount-element.PoisonImmunity * ((element.Poisoned.HP / numberOfRotations) + ((element.health.max*element.Poisoned.HPP)/numberOfRotations)) > 0) {
+              element.health.amount -= element.PoisonImmunity * ((element.Poisoned.HP / numberOfRotations) + ((element.health.max*element.Poisoned.HPP)/numberOfRotations))
+              element.shield.amount -= element.PoisonImmunity * ((element.Poisoned.SH / numberOfRotations) + ((element.shield.max*element.Poisoned.SHP)/numberOfRotations))
+              }
+            setTimeout(() => {
+        applypoison(element)
+      }, element.Poisoned.Interval);
+    }else{
+      element.Poisoned.IsPoisoned = false
+    }
+  };
+//this runs for every object, testing to see if it is poisoned or if it should display a color effect
+function poison(element){
+    if (element.Poisoned.IsPoisoned === true && element.invuln !== true){
+    element.Poisoned.Time += (Math.random() < 0.5 ? -1 : 1)*(Math.round(Math.random())) * element.Poisoned.AddTime
+    element.Poisoned.IsPoisoned = (element.Poisoned.Time*1000/element.Poisoned.Interval)
+      setTimeout(() => {
+        applypoison(element)
+      }, element.Poisoned.Interval);
+  }
+};
+//the freeze alternative to poison, exxcept all we need to do is make sure it stops after a predetermite amount of time
+function freeze(element){
+    if (element.Frozen.IsFrozen === true && element.invuln !== true){
+    element.Frozen.Time += (Math.random() < 0.5 ? -1 : 1)*(Math.round(Math.random())) * element.Frozen.AddTime
+    element.Frozen.IsFrozen = 2 //2 is just a number to show you are already poisoned, so don't redo it
+      setTimeout(() => {
+       element.Frozen.IsFrozen = false
+      }, element.Frozen.Time*1000);
+  }
+};
+var shockLoop = (() => {
+  // Fun stuff, like RAINBOWS :D
+  function shock(my) {
+    entities.forEach(function(element) {
+      if (element.showshock) {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["shockEffect"]);
+      }
+      if (element.shocked && element.type == "tank") {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["shockEffect"]);
+
+        if (!element.invuln) {
+          element.velocity.x -= element.velocity.x / (0.5 - element.iceLevel);
+          element.velocity.y -= element.velocity.y / (0.5 - element.iceLevel);
+        }
+        element.shockTime -= 1;
+        if (element.shockTime <= 0) element.shocked = false;
+
+        if (
+          element.health.amount <= 0 &&
+          element.shockedBy != undefined &&
+          element.shockedBy.skill != undefined
+        ) {
+          element.shockedBy.skill.score += Math.ceil(
+            util.getJackpot(element.shockedBy.skill.score)
+          );
+          element.shockedBy.sendMessage(
+            "You killed " + element.name + " with Electricity."
+          );
+          element.sendMessage(
+            "You have been killed by " +
+              element.shockedBy.name +
+              " with Electricity."
+          );
+        }
+      }
+      if (element.shocked && element.type == "bullet") {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["shockEffect"]);
+
+        if (!element.invuln) {
+          element.velocity.x -= element.velocity.x / (0.5 - element.iceLevel);
+          element.velocity.y -= element.velocity.y / (0.5 - element.iceLevel);
+        }
+
+        element.shockTime -= 1;
+        if (element.shockTime <= 0) element.shocked = false;
+
+        if (
+          element.health.amount <= 0 &&
+          element.shockedBy != undefined &&
+          element.shockedBy.skill != undefined
+        ) {
+          element.shockedBy.skill.score += Math.ceil(
+            util.getJackpot(element.shockedBy.skill.score)
+          );
+          element.shockedBy.sendMessage(
+            "You killed " + element.name + " with Electricity."
+          );
+          element.sendMessage(
+            "You have been killed by " +
+              element.shockedBy.name +
+              " with Electricity."
+          );
+        }
+      }
+      if (element.shocked && element.type == "food") {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["shockEffect"]);
+
+        if (!element.invuln) {
+          element.velocity.x -= element.velocity.x / (0.5 - element.iceLevel);
+          element.velocity.y -= element.velocity.y / (0.5 - element.iceLevel);
+        }
+
+        element.shockTime -= 1;
+        if (element.shockTime <= 0) element.shocked = false;
+
+        if (
+          element.health.amount <= 0 &&
+          element.shockedBy != undefined &&
+          element.shockedBy.skill != undefined
+        ) {
+          element.shockedBy.skill.score += Math.ceil(
+            util.getJackpot(element.shockedBy.skill.score)
+          );
+          element.shockedBy.sendMessage(
+            "You killed " + element.name + " with Electricity."
+          );
+          element.sendMessage(
+            "You have been killed by " +
+              element.shockedBy.name +
+              " with Electricity."
+          );
+        }
+      }
+      if (element.shocked && element.type == "crasher") {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["shockEffect"]);
+
+        if (!element.invuln) {
+          element.velocity.x -= element.velocity.x / (0.5 - element.iceLevel);
+          element.velocity.y -= element.velocity.y / (0.5 - element.iceLevel);
+        }
+
+        element.shockTime -= 1;
+        if (element.shockTime <= 0) element.shocked = false;
+
+        if (
+          element.health.amount <= 0 &&
+          element.shockedBy != undefined &&
+          element.shockedBy.skill != undefined
+        ) {
+          element.shockedBy.skill.score += Math.ceil(
+            util.getJackpot(element.shockedBy.skill.score)
+          );
+          element.shockedBy.sendMessage(
+            "You killed " + element.name + " with Electricity."
+          );
+          element.sendMessage(
+            "You have been killed by " +
+              element.shockedBy.name +
+              " with Electricity."
+          );
+        }
+      }
+      if (element.shocked && element.type == "miniboss") {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["shockEffect"]);
+
+        if (!element.invuln) {
+          element.velocity.x -= element.velocity.x / (0.5 - element.iceLevel);
+          element.velocity.y -= element.velocity.y / (0.5 - element.iceLevel);
+        }
+
+        element.shockTime -= 1;
+        if (element.shockTime <= 0) element.shocked = false;
+
+        if (
+          element.health.amount <= 0 &&
+          element.shockedBy != undefined &&
+          element.shockedBy.skill != undefined
+        ) {
+          element.shockedBy.skill.score += Math.ceil(
+            util.getJackpot(element.shockedBy.skill.score)
+          );
+          element.shockedBy.sendMessage(
+            "You killed " + element.name + " with Electricity."
+          );
+          element.sendMessage(
+            "You have been killed by " +
+              element.shockedBy.name +
+              " with Electricity."
+          );
+        }
+      }
+      if (element.shocked && element.type == "mothership") {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["shockEffect"]);
+
+        if (!element.invuln) {
+          element.velocity.x -= element.velocity.x / (0.5 - element.iceLevel);
+          element.velocity.y -= element.velocity.y / (0.5 - element.iceLevel);
+        }
+
+        element.shockTime -= 1;
+        if (element.shockTime <= 0) element.shocked = false;
+
+        if (
+          element.health.amount <= 0 &&
+          element.shockedBy != undefined &&
+          element.shockedBy.skill != undefined
+        ) {
+          element.shockedBy.skill.score += Math.ceil(
+            util.getJackpot(element.shockedBy.skill.score)
+          );
+          element.shockedBy.sendMessage(
+            "You killed " + element.name + " with Electricity."
+          );
+          element.sendMessage(
+            "You have been killed by " +
+              element.shockedBy.name +
+              " with Electricity."
+          );
+        }
+      }
+    });
+  }
+  return () => {
+    // run the electricity
+    shock();
+  };
+})();
+var burnLoop = (() => {
+  // Fun stuff, like RAINBOWS :D
+  function burn(my) {
+    entities.forEach(function(element) {
+      if (element.showburn) {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["burnEffect"]);
+      }
+      if (element.burned && element.type == "tank") {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["burnEffect"]);
+
+        if (!element.invuln) {
+          element.health.amount -=
+            element.health.max / (100 - element.burnLevel);
+          element.shield.amount -=
+            element.shield.max / (85 - element.burnLevel);
+        }
+
+        element.burnTime -= 1;
+        if (element.burnTime <= 0) element.burned = false;
+
+        if (
+          element.health.amount <= 0 &&
+          element.burnedBy != undefined &&
+          element.burnedBy.skill != undefined
+        ) {
+          element.burnedBy.skill.score += Math.ceil(
+            util.getJackpot(element.burnedBy.skill.score)
+          );
+          element.burnedBy.sendMessage(
+            "You killed " + element.name + " with Fire."
+          );
+          element.sendMessage(
+            "You have been killed by " + element.burnedBy.name + " with Fire."
+          );
+        }
+      }
+
+      if (element.burned && element.type == "bullet") {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["burnEffect"]);
+
+        if (!element.invuln) {
+          element.health.amount -=
+            element.health.max / (100 - element.burnLevel);
+          element.shield.amount -=
+            element.shield.max / (85 - element.burnLevel);
+        }
+
+        element.burnTime -= 1;
+        if (element.burnTime <= 0) element.burned = false;
+
+        if (
+          element.health.amount <= 0 &&
+          element.burnedBy != undefined &&
+          element.burnedBy.skill != undefined
+        ) {
+          element.burnedBy.skill.score += Math.ceil(
+            util.getJackpot(element.burnedBy.skill.score)
+          );
+          element.burnedBy.sendMessage(
+            "You killed " + element.name + " with Fire."
+          );
+          element.sendMessage(
+            "You have been killed by " + element.burnedBy.name + " with Fire."
+          );
+        }
+      }
+      if (element.burned && element.type == "crasher") {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["burnEffect"]);
+
+        if (!element.invuln) {
+          element.health.amount -=
+            element.health.max / (100 - element.burnLevel);
+          element.shield.amount -=
+            element.shield.max / (85 - element.burnLevel);
+        }
+
+        element.burnTime -= 1;
+        if (element.burnTime <= 0) element.burned = false;
+
+        if (
+          element.health.amount <= 0 &&
+          element.burnedBy != undefined &&
+          element.burnedBy.skill != undefined
+        ) {
+          element.burnedBy.skill.score += Math.ceil(
+            util.getJackpot(element.burnedBy.skill.score)
+          );
+          element.burnedBy.sendMessage(
+            "You killed " + element.name + " with Fire."
+          );
+          element.sendMessage(
+            "You have been killed by " + element.burnedBy.name + " with Fire."
+          );
+        }
+      }
+      if (element.burned && element.type == "miniboss") {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["burnEffect"]);
+
+        if (!element.invuln) {
+          element.health.amount -=
+            element.health.max / (100 - element.burnLevel);
+          element.shield.amount -=
+            element.shield.max / (85 - element.burnLevel);
+        }
+
+        element.burnTime -= 1;
+        if (element.burnTime <= 0) element.burned = false;
+
+        if (
+          element.health.amount <= 0 &&
+          element.burnedBy != undefined &&
+          element.burnedBy.skill != undefined
+        ) {
+          element.burnedBy.skill.score += Math.ceil(
+            util.getJackpot(element.burnedBy.skill.score)
+          );
+          element.burnedBy.sendMessage(
+            "You killed " + element.name + " with Fire."
+          );
+          element.sendMessage(
+            "You have been killed by " + element.burnedBy.name + " with Fire."
+          );
+        }
+      }
+      if (element.burned && element.type == "mothership") {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["burnEffect"]);
+
+        if (!element.invuln) {
+          element.health.amount -=
+            element.health.max / (100 - element.burnLevel);
+          element.shield.amount -=
+            element.shield.max / (85 - element.burnLevel);
+        }
+
+        element.burnTime -= 1;
+        if (element.burnTime <= 0) element.burned = false;
+
+        if (
+          element.health.amount <= 0 &&
+          element.burnedBy != undefined &&
+          element.burnedBy.skill != undefined
+        ) {
+          element.burnedBy.skill.score += Math.ceil(
+            util.getJackpot(element.burnedBy.skill.score)
+          );
+          element.burnedBy.sendMessage(
+            "You killed " + element.name + " with Fire."
+          );
+          element.sendMessage(
+            "You have been killed by " + element.burnedBy.name + " with Fire."
+          );
+        }
+      }
+      if (element.burned && element.type == "food") {
+        let x = element.size + 10;
+        let y = element.size + 10;
+        Math.random() < 0.5 ? (x *= -1) : x;
+        Math.random() < 0.5 ? (y *= -1) : y;
+        Math.random() < 0.5 ? (x *= Math.random() + 1) : x;
+        Math.random() < 0.5 ? (y *= Math.random() + 1) : y;
+        var o = new Entity({
+          x: element.x + x,
+          y: element.y + y
+        });
+        o.define(Class["burnEffect"]);
+
+        if (!element.invuln) {
+          element.health.amount -=
+            element.health.max / (100 - element.burnLevel);
+          element.shield.amount -=
+            element.shield.max / (85 - element.burnLevel);
+        }
+
+        element.burnTime -= 1;
+        if (element.burnTime <= 0) element.burned = false;
+
+        if (
+          element.health.amount <= 0 &&
+          element.burnedBy != undefined &&
+          element.burnedBy.skill != undefined
+        ) {
+          element.burnedBy.skill.score += Math.ceil(
+            util.getJackpot(element.burnedBy.skill.score)
+          );
+          element.burnedBy.sendMessage(
+            "You killed " + element.name + " with Fire."
+          );
+          element.sendMessage(
+            "You have been killed by " + element.burnedBy.name + " with Fire."
+          );
+        }
+      }
+    });
+  }
+  return () => {
+    // run the fire
+    burn();
+  };
+})();
+
 var maintainloop = (() => {
     // Place obstacles
     function placeRoids() {
@@ -4556,13 +5487,13 @@ var maintainloop = (() => {
                     names = ran.chooseBossName(nameClass, number);
                     i = 0;
                     if (n === 1) {
-                        begin = 'A visitor is coming.';
+                        begin = 'Something is Emerging from the Shadows...';
                         arrival = names[0] + ' has arrived.'; 
                     } else {
-                        begin = 'Visitors are coming.';
+                        begin = 'Visitors are Emerging from the Shadows...';
                         arrival = '';
                         for (let i=0; i<n-2; i++) arrival += names[i] + ', ';
-                        arrival += names[n-2] + ' and ' + names[n-1] + ' have arrived.';
+                        arrival += names[n-2] + ' and ' + names[n-1] + ' have arrived';
                     }
                 },
                 spawn: () => {
@@ -4583,7 +5514,7 @@ var maintainloop = (() => {
                 let choice = [];
                 switch (ran.chooseChance(40, 1)) {
                     case 0: 
-                        choice = [[Class.elite_destroyer], 2, 'a', 'nest'];
+                        choice = [[Class.elite_destroyer, Class.elite_gunner, Class.solario, Class.palisade, Class.elite_sprayer], 2, 'a', 'nest'];
                         break;
                     case 1: 
                         choice = [[Class.palisade], 1, 'castle', 'norm']; 
@@ -4609,7 +5540,7 @@ var maintainloop = (() => {
     // The NPC function
     let makenpcs = (() => {
         // Make base protectors if needed.
-            /*let f = (loc, team) => { 
+           /*  let f = (loc, team) => { 
                 let o = new Entity(loc);
                     o.define(Class.baseProtector);
                     o.team = -team;
@@ -4617,7 +5548,7 @@ var maintainloop = (() => {
             };
             for (let i=1; i<5; i++) {
                 room['bas' + i].forEach((loc) => { f(loc, i); }); 
-            }*/
+            } */
         // Return the spawning function
         let bots = [];
         return () => {
@@ -4635,15 +5566,15 @@ var maintainloop = (() => {
             // Spawning
             spawnCrasher(census);
             spawnBosses(census);
-            /*/ Bots
                 if (bots.length < c.BOTS) {
                     let o = new Entity(room.random());
-                    o.color = 17;
+                    o.color = 5;
                     o.define(Class.bot);
-                    o.define(Class.basic);
+                     let arrayOfClasses = [Class.basic, Class.twin, Class.sniper, Class.machine, Class.flank, Class.director, Class.pound, Class.double, Class.bent, Class.gunner, Class.hexa, Class.assassin, Class.hunter, Class.mini, Class.rifle, Class.artillery, Class.tri, Class.auto3, Class.flanktrap, Class.overseer, Class.cruiser, Class.underseer, Class.lilfact, Class.destroy, Class.builder, Class.tripletwin, Class.split, Class.autodouble, Class.bentdouble, Class.penta, Class.spread, Class.benthybrid, Class.triple, Class.autogunner, Class.nailgun, Class.auto4, Class.machinegunner, Class.guntrap, Class.overgunner, Class.octo, Class.hexatrap, Class.dual, Class.ranger, Class.autoass, Class.preda, Class.poach, Class.sidewind, Class.stream, Class.hybridmini, Class.minitrap, Class.bushwhack, Class.mortar, Class.skimmer, Class.spray, Class.fighter, Class.booster, Class.bomber, Class.autotri, Class.auto5, Class.sniper3, Class.bentboomer, Class.revix, Class.crayon, Class.Pastel, Class.Brush, Class.Highlighter, Class.minilazer, Class.autobasic, Class.autotwin, Class.conq, Class.hivemind, Class.twindrive, Class.DeltaCannon, Class.Catalyst, Class.Cescav, Class.Cascal, Class.Gunto]
+                      let newClass = arrayOfClasses[Math.floor(Math.random() * arrayOfClasses.length)];
+                    o.define(newClass);
                     o.name += ran.chooseBotName();
                     o.refreshBodyAttributes();
-                    o.color = 17;
                     bots.push(o);
                 }
                 // Remove dead ones
@@ -4655,7 +5586,6 @@ var maintainloop = (() => {
                         o.skill.maintain();
                     }
                 });
-            */
         };
     })();
     // The big food function
@@ -4930,7 +5860,7 @@ let server = http.createServer((req, res) => {
   switch (pathname) {
     case '/':
       res.writeHead(200)
-      res.end(`<!DOCTYPE html><h3>Arras</h3><button onclick="location.href = 'http://arras.io/#host=' + location.host">Open</button>`)
+      res.end(`<!DOCTYPE html><h3>Neiro.io</h3><button onclick="location.href = 'http://arras.io/#host=' + location.host">Play</button>`)
     break
     case '/mockups.json':
       res.setHeader('Access-Control-Allow-Origin', '*')
